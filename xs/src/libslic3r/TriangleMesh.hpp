@@ -1,10 +1,11 @@
 #ifndef slic3r_TriangleMesh_hpp_
 #define slic3r_TriangleMesh_hpp_
 
-#include <myinit.h>
+#include "libslic3r.h"
 #include <admesh/stl.h>
 #include <vector>
 #include "BoundingBox.hpp"
+#include "Line.hpp"
 #include "Point.hpp"
 #include "Polygon.hpp"
 #include "ExPolygon.hpp"
@@ -21,40 +22,40 @@ class TriangleMesh
     TriangleMesh();
     TriangleMesh(const TriangleMesh &other);
     TriangleMesh& operator= (TriangleMesh other);
-    void swap(TriangleMesh &other);
+    void swap(TriangleMesh &first, TriangleMesh &second);
     ~TriangleMesh();
-    void ReadSTLFile(char* input_file);
-    void write_ascii(char* output_file);
-    void write_binary(char* output_file);
+    void ReadSTLFile(const std::string &input_file);
+    void write_ascii(const std::string &output_file);
+    void write_binary(const std::string &output_file);
     void repair();
-    void WriteOBJFile(char* output_file);
+    void check_topology();
+    float volume();
+    bool is_manifold() const;
+    void WriteOBJFile(const std::string &output_file);
     void scale(float factor);
     void scale(const Pointf3 &versor);
     void translate(float x, float y, float z);
+    void rotate(float angle, const Axis &axis);
     void rotate_x(float angle);
     void rotate_y(float angle);
     void rotate_z(float angle);
-    void flip_x();
-    void flip_y();
-    void flip_z();
+    void mirror(const Axis &axis);
+    void mirror_x();
+    void mirror_y();
+    void mirror_z();
     void align_to_origin();
+    void center_around_origin();
     void rotate(double angle, Point* center);
     TriangleMeshPtrs split() const;
     void merge(const TriangleMesh &mesh);
-    void horizontal_projection(ExPolygons &retval) const;
-    void convex_hull(Polygon* hull);
-    void bounding_box(BoundingBoxf3* bb) const;
+    ExPolygons horizontal_projection() const;
+    Polygon convex_hull();
     BoundingBoxf3 bounding_box() const;
     void reset_repair_stats();
     bool needed_repair() const;
     size_t facets_count() const;
     stl_file stl;
     bool repaired;
-    
-    #ifdef SLIC3RXS
-    SV* to_SV();
-    void ReadFromPerl(SV* vertices, SV* facets);
-    #endif
     
     private:
     void require_shared_vertices();
@@ -71,11 +72,9 @@ class IntersectionPoint : public Point
     IntersectionPoint() : point_id(-1), edge_id(-1) {};
 };
 
-class IntersectionLine
+class IntersectionLine : public Line
 {
     public:
-    Point           a;
-    Point           b;
     int             a_id;
     int             b_id;
     int             edge_a_id;

@@ -2,15 +2,19 @@
 
 namespace Slic3r {
 
-Extruder::Extruder(int id, PrintConfig *config)
+Extruder::Extruder(unsigned int id, GCodeConfig *config)
 :   id(id),
     config(config)
 {
     reset();
     
     // cache values that are going to be called often
-    this->e_per_mm3 = this->extrusion_multiplier()
-        * (4 / ((this->filament_diameter() * this->filament_diameter()) * PI));
+    if (config->use_volumetric_e) {
+        this->e_per_mm3 = this->extrusion_multiplier();
+    } else {
+        this->e_per_mm3 = this->extrusion_multiplier()
+            * (4 / ((this->filament_diameter() * this->filament_diameter()) * PI));
+    }
     this->retract_speed_mm_min = this->retract_speed() * 60;
 }
 
@@ -80,27 +84,25 @@ Extruder::e_per_mm(double mm3_per_mm) const
 double
 Extruder::extruded_volume() const
 {
+    if (this->config->use_volumetric_e) {
+        // Any current amount of retraction should not affect used filament, since
+        // it represents empty volume in the nozzle. We add it back to E.
+        return this->absolute_E + this->retracted;
+    }
+    
     return this->used_filament() * (this->filament_diameter() * this->filament_diameter()) * PI/4;
 }
 
 double
 Extruder::used_filament() const
 {
+    if (this->config->use_volumetric_e) {
+        return this->extruded_volume() / (this->filament_diameter() * this->filament_diameter() * PI/4);
+    }
+    
     // Any current amount of retraction should not affect used filament, since
     // it represents empty volume in the nozzle. We add it back to E.
     return this->absolute_E + this->retracted;
-}
-
-Pointf
-Extruder::extruder_offset() const
-{
-    return this->config->extruder_offset.get_at(this->id);
-}
-
-double
-Extruder::nozzle_diameter() const
-{
-    return this->config->nozzle_diameter.get_at(this->id);
 }
 
 double
@@ -113,18 +115,6 @@ double
 Extruder::extrusion_multiplier() const
 {
     return this->config->extrusion_multiplier.get_at(this->id);
-}
-
-int
-Extruder::temperature() const
-{
-    return this->config->temperature.get_at(this->id);
-}
-
-int
-Extruder::first_layer_temperature() const
-{
-    return this->config->first_layer_temperature.get_at(this->id);
 }
 
 double
@@ -152,18 +142,6 @@ Extruder::retract_restart_extra() const
 }
 
 double
-Extruder::retract_before_travel() const
-{
-    return this->config->retract_before_travel.get_at(this->id);
-}
-
-bool
-Extruder::retract_layer_change() const
-{
-    return this->config->retract_layer_change.get_at(this->id);
-}
-
-double
 Extruder::retract_length_toolchange() const
 {
     return this->config->retract_length_toolchange.get_at(this->id);
@@ -174,16 +152,5 @@ Extruder::retract_restart_extra_toolchange() const
 {
     return this->config->retract_restart_extra_toolchange.get_at(this->id);
 }
-
-bool
-Extruder::wipe() const
-{
-    return this->config->wipe.get_at(this->id);
-}
-
-
-#ifdef SLIC3RXS
-REGISTER_CLASS(Extruder, "Extruder");
-#endif
 
 }

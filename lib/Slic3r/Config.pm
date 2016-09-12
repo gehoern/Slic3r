@@ -31,7 +31,8 @@ sub new_from_defaults {
     my $self = $class->new;
     my $defaults = Slic3r::Config::Full->new;
     if (@opt_keys) {
-        $self->set($_, $defaults->get($_)) for @opt_keys;
+        $self->set($_, $defaults->get($_))
+            for grep $defaults->has($_), @opt_keys;
     } else {
         $self->apply_static($defaults);
     }
@@ -86,8 +87,17 @@ sub load {
     my $class = shift;
     my ($file) = @_;
     
-    my $ini = __PACKAGE__->read_ini($file);
-    return $class->load_ini_hash($ini->{_});
+    # legacy syntax of load()
+    my $config = $class->new;
+    $config->_load(Slic3r::encode_path($file));
+    return $config;
+}
+
+sub save {
+    my $self = shift;
+    my ($file) = @_;
+    
+    return $self->_save(Slic3r::encode_path($file));
 }
 
 sub load_ini_hash {
@@ -174,19 +184,6 @@ sub _handle_legacy {
     return ($opt_key, $value);
 }
 
-sub set_ifndef {
-    my $self = shift;
-    my ($opt_key, $value, $deserialize) = @_;
-    
-    if (!$self->has($opt_key)) {
-        if ($deserialize) {
-            $self->set_deserialize($opt_key, $value);
-        } else {
-            $self->set($opt_key, $value);
-        }
-    }
-}
-
 sub as_ini {
     my ($self) = @_;
     
@@ -196,38 +193,6 @@ sub as_ini {
         $ini->{_}{$opt_key} = $self->serialize($opt_key);
     }
     return $ini;
-}
-
-sub save {
-    my $self = shift;
-    my ($file) = @_;
-    
-    __PACKAGE__->write_ini($file, $self->as_ini);
-}
-
-sub setenv {
-    my $self = shift;
-    
-    foreach my $opt_key (@{$self->get_keys}) {
-        $ENV{"SLIC3R_" . uc $opt_key} = $self->serialize($opt_key);
-    }
-}
-
-sub equals {
-    my ($self, $other) = @_;
-    return @{ $self->diff($other) } == 0;
-}
-
-# this will *ignore* options not present in both configs
-sub diff {
-    my ($self, $other) = @_;
-    
-    my @diff = ();
-    foreach my $opt_key (sort @{$self->get_keys}) {
-        push @diff, $opt_key
-            if $other->has($opt_key) && $other->serialize($opt_key) ne $self->serialize($opt_key);
-    }
-    return [@diff];
 }
 
 # this method is idempotent by design and only applies to ::DynamicConfig or ::Full
@@ -248,6 +213,8 @@ sub validate {
     # --first-layer-height
     die "Invalid value for --first-layer-height\n"
         if $self->first_layer_height !~ /^(?:\d*(?:\.\d+)?)%?$/;
+    die "Invalid value for --first-layer-height\n"
+        if $self->get_value('first_layer_height') <= 0;
     
     # --filament-diameter
     die "Invalid value for --filament-diameter\n"
@@ -270,8 +237,8 @@ sub validate {
     die "Invalid value for --gcode-flavor\n"
         if !first { $_ eq $self->gcode_flavor } @{$Options->{gcode_flavor}{values}};
     
-    die "--use-firmware-retraction is only supported by Marlin firmware\n"
-        if $self->use_firmware_retraction && $self->gcode_flavor ne 'reprap';
+    die "--use-firmware-retraction is only supported by Marlin and Machinekit firmware\n"
+        if $self->use_firmware_retraction && $self->gcode_flavor ne 'smoothie' && $self->gcode_flavor ne 'reprap' && $self->gcode_flavor ne 'machinekit';
     
     die "--use-firmware-retraction is not compatible with --wipe\n"
         if $self->use_firmware_retraction && first {$_} @{$self->wipe};
@@ -280,14 +247,14 @@ sub validate {
     die "Invalid value for --fill-pattern\n"
         if !first { $_ eq $self->fill_pattern } @{$Options->{fill_pattern}{values}};
     
-    # --solid-fill-pattern
-    die "Invalid value for --solid-fill-pattern\n"
-        if !first { $_ eq $self->solid_fill_pattern } @{$Options->{solid_fill_pattern}{values}};
+    # --external-fill-pattern
+    die "Invalid value for --external-fill-pattern\n"
+        if !first { $_ eq $self->external_fill_pattern } @{$Options->{external_fill_pattern}{values}};
     
     # --fill-density
     die "The selected fill pattern is not supposed to work at 100% density\n"
         if $self->fill_density == 100
-            && !first { $_ eq $self->fill_pattern } @{$Options->{solid_fill_pattern}{values}};
+            && !first { $_ eq $self->fill_pattern } @{$Options->{external_fill_pattern}{values}};
     
     # --infill-every-layers
     die "Invalid value for --infill-every-layers\n"
@@ -376,15 +343,6 @@ sub validate {
     return 1;
 }
 
-# min object distance is max(duplicate_distance, clearance_radius)
-sub min_object_distance {
-    my $self = shift;
-    
-    return ($self->complete_objects && $self->extruder_clearance_radius > $self->duplicate_distance)
-        ? $self->extruder_clearance_radius
-        : $self->duplicate_distance;
-}
-
 # CLASS METHODS:
 
 sub write_ini {
@@ -410,7 +368,8 @@ sub read_ini {
     my ($file) = @_;
     
     local $/ = "\n";
-    Slic3r::open(\my $fh, '<', $file);
+    Slic3r::open(\my $fh, '<', $file)
+        or die "Unable to open $file: $!\n";
     binmode $fh, ':utf8';
     
     my $ini = { _ => {} };
@@ -424,7 +383,7 @@ sub read_ini {
             $category = $1;
             next;
         }
-        /^(\w+) = (.*)/ or die "Unreadable configuration file (invalid data at line $.)\n";
+        /^(\w+) *= *(.*)/ or die "Unreadable configuration file (invalid data at line $.)\n";
         $ini->{$category}{$1} = $2;
     }
     close $fh;
@@ -432,19 +391,13 @@ sub read_ini {
     return $ini;
 }
 
-package Slic3r::Config::GCode;
+package Slic3r::Config::Static;
 use parent 'Slic3r::Config';
 
-package Slic3r::Config::Print;
-use parent 'Slic3r::Config';
-
-package Slic3r::Config::PrintObject;
-use parent 'Slic3r::Config';
-
-package Slic3r::Config::PrintRegion;
-use parent 'Slic3r::Config';
-
-package Slic3r::Config::Full;
-use parent 'Slic3r::Config';
+sub Slic3r::Config::GCode::new { Slic3r::Config::Static::new_GCodeConfig }
+sub Slic3r::Config::Print::new { Slic3r::Config::Static::new_PrintConfig }
+sub Slic3r::Config::PrintObject::new { Slic3r::Config::Static::new_PrintObjectConfig }
+sub Slic3r::Config::PrintRegion::new { Slic3r::Config::Static::new_PrintRegionConfig }
+sub Slic3r::Config::Full::new { Slic3r::Config::Static::new_FullPrintConfig }
 
 1;

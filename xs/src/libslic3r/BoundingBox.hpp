@@ -1,7 +1,7 @@
 #ifndef slic3r_BoundingBox_hpp_
 #define slic3r_BoundingBox_hpp_
 
-#include <myinit.h>
+#include "libslic3r.h"
 #include "Point.hpp"
 #include "Polygon.hpp"
 
@@ -23,12 +23,14 @@ class BoundingBoxBase
     BoundingBoxBase() : defined(false) {};
     BoundingBoxBase(const std::vector<PointClass> &points);
     void merge(const PointClass &point);
+    void merge(const std::vector<PointClass> &points);
     void merge(const BoundingBoxBase<PointClass> &bb);
     void scale(double factor);
     PointClass size() const;
     void translate(coordf_t x, coordf_t y);
     void offset(coordf_t delta);
     PointClass center() const;
+    bool contains(const PointClass &point) const;
 };
 
 template <class PointClass>
@@ -38,6 +40,7 @@ class BoundingBox3Base : public BoundingBoxBase<PointClass>
     BoundingBox3Base() : BoundingBoxBase<PointClass>() {};
     BoundingBox3Base(const std::vector<PointClass> &points);
     void merge(const PointClass &point);
+    void merge(const std::vector<PointClass> &points);
     void merge(const BoundingBox3Base<PointClass> &bb);
     PointClass size() const;
     void translate(coordf_t x, coordf_t y, coordf_t z);

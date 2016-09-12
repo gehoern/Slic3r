@@ -7,7 +7,7 @@ use List::Util qw(min max first);
 use Slic3r::Geometry qw(X Y scale unscale convex_hull);
 use Slic3r::Geometry::Clipper qw(offset JT_ROUND intersection_pl);
 use Wx qw(:misc :pen :brush :sizer :font :cursor wxTAB_TRAVERSAL);
-use Wx::Event qw(EVT_MOUSE_EVENTS EVT_PAINT EVT_SIZE);
+use Wx::Event qw(EVT_MOUSE_EVENTS EVT_PAINT EVT_ERASE_BACKGROUND EVT_SIZE);
 use base 'Wx::Panel';
 
 use constant CANVAS_TEXT => join('-', +(localtime)[3,4]) eq '13-8'
@@ -19,15 +19,16 @@ sub new {
     my ($parent, $size, $objects, $model, $config) = @_;
     
     my $self = $class->SUPER::new($parent, -1, wxDefaultPosition, $size, wxTAB_TRAVERSAL);
+    # This has only effect on MacOS. On Windows and Linux/GTK, the background is painted by $self->repaint().
     $self->SetBackgroundColour(Wx::wxWHITE);
-    
+
     $self->{objects}            = $objects;
     $self->{model}              = $model;
     $self->{config}             = $config;
     $self->{on_select_object}   = sub {};
     $self->{on_double_click}    = sub {};
     $self->{on_right_click}     = sub {};
-    $self->{on_instance_moved}  = sub {};
+    $self->{on_instances_moved} = sub {};
     
     $self->{objects_brush}      = Wx::Brush->new(Wx::Colour->new(210,210,210), wxSOLID);
     $self->{selected_brush}     = Wx::Brush->new(Wx::Colour->new(255,128,128), wxSOLID);
@@ -37,8 +38,11 @@ sub new {
     $self->{print_center_pen}   = Wx::Pen->new(Wx::Colour->new(200,200,200), 1, wxSOLID);
     $self->{clearance_pen}      = Wx::Pen->new(Wx::Colour->new(0,0,200), 1, wxSOLID);
     $self->{skirt_pen}          = Wx::Pen->new(Wx::Colour->new(150,150,150), 1, wxSOLID);
+
+    $self->{user_drawn_background} = $^O ne 'darwin';
     
     EVT_PAINT($self, \&repaint);
+    EVT_ERASE_BACKGROUND($self, sub {}) if $self->{user_drawn_background};
     EVT_MOUSE_EVENTS($self, \&mouse_event);
     EVT_SIZE($self, sub {
         $self->update_bed_size;
@@ -63,18 +67,30 @@ sub on_right_click {
     $self->{on_right_click} = $cb;
 }
 
-sub on_instance_moved {
+sub on_instances_moved {
     my ($self, $cb) = @_;
-    $self->{on_instance_moved} = $cb;
+    $self->{on_instances_moved} = $cb;
 }
 
 sub repaint {
     my ($self, $event) = @_;
     
-    my $dc = Wx::PaintDC->new($self);
+    my $dc = Wx::AutoBufferedPaintDC->new($self);
     my $size = $self->GetSize;
     my @size = ($size->GetWidth, $size->GetHeight);
-    
+
+    if ($self->{user_drawn_background}) {
+        # On all systems the AutoBufferedPaintDC() achieves double buffering.
+        # On MacOS the background is erased, on Windows the background is not erased 
+        # and on Linux/GTK the background is erased to gray color.
+        # Fill DC with the background on Windows & Linux/GTK.
+        my $brush_background = Wx::Brush->new(Wx::wxWHITE, wxSOLID);
+        $dc->SetPen(wxWHITE_PEN);
+        $dc->SetBrush($brush_background);
+        my $rect = $self->GetUpdateRegion()->GetBox();
+        $dc->DrawRectangle($rect->GetLeft(), $rect->GetTop(), $rect->GetWidth(), $rect->GetHeight());
+    }
+
     # draw grid
     $dc->SetPen($self->{grid_pen});
     $dc->DrawLine(map @$_, @$_) for @{$self->{grid}};
@@ -183,9 +199,11 @@ sub mouse_event {
     my $point = $self->point_to_model_units([ $pos->x, $pos->y ]);  #]]
     if ($event->ButtonDown) {
         $self->{on_select_object}->(undef);
-        OBJECTS: for my $obj_idx (0 .. $#{$self->{objects}}) {
+        # traverse objects and instances in reverse order, so that if they're overlapping
+        # we get the one that gets drawn last, thus on top (as user expects that to move)
+        OBJECTS: for my $obj_idx (reverse 0 .. $#{$self->{objects}}) {
             my $object = $self->{objects}->[$obj_idx];
-            for my $instance_idx (0 .. $#{ $object->instance_thumbnails }) {
+            for my $instance_idx (reverse 0 .. $#{ $object->instance_thumbnails }) {
                 my $thumbnail = $object->instance_thumbnails->[$instance_idx];
                 if (defined first { $_->contour->contains_point($point) } @$thumbnail) {
                     $self->{on_select_object}->($obj_idx);
@@ -208,13 +226,13 @@ sub mouse_event {
             }
         }
         $self->Refresh;
-    } elsif ($event->ButtonUp(&Wx::wxMOUSE_BTN_LEFT)) {
-        $self->{on_instance_moved}->();
-        $self->Refresh;
+    } elsif ($event->LeftUp) {
+        $self->{on_instances_moved}->()
+            if $self->{drag_object};
         $self->{drag_start_pos} = undef;
         $self->{drag_object} = undef;
         $self->SetCursor(wxSTANDARD_CURSOR);
-    } elsif ($event->ButtonDClick) {
+    } elsif ($event->LeftDClick) {
     	$self->{on_double_click}->();
     } elsif ($event->Dragging) {
         return if !$self->{drag_start_pos}; # concurrency problems
@@ -274,7 +292,7 @@ sub update_bed_size {
             push @polylines, Slic3r::Polyline->new([$bb->x_min, $y], [$bb->x_max, $y]);
         }
         @polylines = @{intersection_pl(\@polylines, [$polygon])};
-        $self->{grid} = [ map $self->scaled_points_to_pixel(\@$_, 1), @polylines ];
+        $self->{grid} = [ map $self->scaled_points_to_pixel([ @$_[0,-1] ], 1), @polylines ];
     }
 }
 

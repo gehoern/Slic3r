@@ -1,7 +1,7 @@
 #ifndef slic3r_Model_hpp_
 #define slic3r_Model_hpp_
 
-#include <myinit.h>
+#include "libslic3r.h"
 #include "PrintConfig.hpp"
 #include "Layer.hpp"
 #include "Point.hpp"
@@ -39,7 +39,7 @@ class Model
     void swap(Model &other);
     ~Model();
     ModelObject* add_object();
-    ModelObject* add_object(const ModelObject &other);
+    ModelObject* add_object(const ModelObject &other, bool copy_volumes = true);
     void delete_object(size_t idx);
     void clear_objects();
     
@@ -48,24 +48,21 @@ class Model
     ModelMaterial* get_material(t_model_material_id material_id);
     void delete_material(t_model_material_id material_id);
     void clear_materials();
-    // void duplicate_objects_grid(unsigned int x, unsigned int y, coordf_t distance);
-    // void duplicate_objects(size_t copies_num, coordf_t distance, const BoundingBox &bb);
-    // void arrange_objects(coordf_t distance, const BoundingBox &bb);
-    // void duplicate(size_t copies_num, coordf_t distance, const BoundingBox &bb);
     bool has_objects_with_no_instances() const;
     bool add_default_instances();
-    void bounding_box(BoundingBoxf3* bb);
+    BoundingBoxf3 bounding_box() const;
+    void repair();
     void center_instances_around_point(const Pointf &point);
     void align_instances_to_origin();
     void translate(coordf_t x, coordf_t y, coordf_t z);
-    void mesh(TriangleMesh* mesh) const;
-    void raw_mesh(TriangleMesh* mesh) const;
-    // void split_meshes();
-    // std::string get_material_name(t_model_material_id material_id);
-
-    
-    private:
-    void _arrange(const std::vector<Size> &sizes, coordf_t distance, const BoundingBox &bb) const;
+    TriangleMesh mesh() const;
+    TriangleMesh raw_mesh() const;
+    Pointfs _arrange(const Pointfs &sizes, coordf_t dist, const BoundingBoxf* bb = NULL) const;
+    void arrange_objects(coordf_t dist, const BoundingBoxf* bb = NULL);
+    void duplicate(size_t copies_num, coordf_t dist, const BoundingBoxf* bb = NULL);
+    void duplicate_objects(size_t copies_num, coordf_t dist, const BoundingBoxf* bb = NULL);
+    void duplicate_objects_grid(size_t x, size_t y, coordf_t dist);
+    void print_info() const;
 };
 
 class ModelMaterial
@@ -95,7 +92,12 @@ class ModelObject
     ModelVolumePtrs volumes;
     DynamicPrintConfig config;
     t_layer_height_ranges layer_height_ranges;
-    Pointf origin_translation;
+    
+    /* This vector accumulates the total translation applied to the object by the
+        center_around_origin() method. Callers might want to apply the same translation
+        to new volumes before adding them to this object in order to preserve alignment
+        when user expects that. */
+    Pointf3 origin_translation;
     
     // these should be private but we need to expose them via XS until all methods are ported
     BoundingBoxf3 _bounding_box;
@@ -114,27 +116,34 @@ class ModelObject
     void delete_last_instance();
     void clear_instances();
 
-    void bounding_box(BoundingBoxf3* bb);
+    BoundingBoxf3 bounding_box();
     void invalidate_bounding_box();
 
-    void mesh(TriangleMesh* mesh) const;
-    void raw_mesh(TriangleMesh* mesh) const;
-    void raw_bounding_box(BoundingBoxf3* bb) const;
-    void instance_bounding_box(size_t instance_idx, BoundingBoxf3* bb) const;
+    void repair();
+    TriangleMesh mesh() const;
+    TriangleMesh raw_mesh() const;
+    BoundingBoxf3 raw_bounding_box() const;
+    BoundingBoxf3 instance_bounding_box(size_t instance_idx) const;
     void center_around_origin();
+    void translate(const Vectorf3 &vector);
     void translate(coordf_t x, coordf_t y, coordf_t z);
+    void scale(float factor);
     void scale(const Pointf3 &versor);
+    void rotate(float angle, const Axis &axis);
+    void mirror(const Axis &axis);
     size_t materials_count() const;
     size_t facets_count() const;
     bool needed_repair() const;
     void cut(coordf_t z, Model* model) const;
+    void split(ModelObjectPtrs* new_objects);
     void update_bounding_box();   // this is a private method but we expose it until we need to expose it via XS
+    void print_info() const;
     
     private:
     Model* model;
     
     ModelObject(Model *model);
-    ModelObject(Model *model, const ModelObject &other);
+    ModelObject(Model *model, const ModelObject &other, bool copy_volumes = true);
     ModelObject& operator= (ModelObject other);
     void swap(ModelObject &other);
     ~ModelObject();
@@ -163,13 +172,15 @@ class ModelVolume
     
     ModelVolume(ModelObject *object, const TriangleMesh &mesh);
     ModelVolume(ModelObject *object, const ModelVolume &other);
+    ModelVolume& operator= (ModelVolume other);
+    void swap(ModelVolume &other);
 };
 
 class ModelInstance
 {
     friend class ModelObject;
     public:
-    double rotation;            // around mesh center point
+    double rotation;            // in radians around mesh center point
     double scaling_factor;
     Pointf offset;              // in unscaled coordinates
     
@@ -182,6 +193,8 @@ class ModelInstance
     
     ModelInstance(ModelObject *object);
     ModelInstance(ModelObject *object, const ModelInstance &other);
+    ModelInstance& operator= (ModelInstance other);
+    void swap(ModelInstance &other);
 };
 
 }

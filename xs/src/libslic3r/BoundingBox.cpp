@@ -95,6 +95,14 @@ template void BoundingBoxBase<Point>::merge(const Point &point);
 template void BoundingBoxBase<Pointf>::merge(const Pointf &point);
 
 template <class PointClass> void
+BoundingBoxBase<PointClass>::merge(const std::vector<PointClass> &points)
+{
+    this->merge(BoundingBoxBase(points));
+}
+template void BoundingBoxBase<Point>::merge(const Points &points);
+template void BoundingBoxBase<Pointf>::merge(const Pointfs &points);
+
+template <class PointClass> void
 BoundingBoxBase<PointClass>::merge(const BoundingBoxBase<PointClass> &bb)
 {
     if (this->defined) {
@@ -121,6 +129,13 @@ BoundingBox3Base<PointClass>::merge(const PointClass &point)
     BoundingBoxBase<PointClass>::merge(point);
 }
 template void BoundingBox3Base<Pointf3>::merge(const Pointf3 &point);
+
+template <class PointClass> void
+BoundingBox3Base<PointClass>::merge(const std::vector<PointClass> &points)
+{
+    this->merge(BoundingBox3Base(points));
+}
+template void BoundingBox3Base<Pointf3>::merge(const Pointf3s &points);
 
 template <class PointClass> void
 BoundingBox3Base<PointClass>::merge(const BoundingBox3Base<PointClass> &bb)
@@ -204,10 +219,13 @@ BoundingBox3Base<PointClass>::center() const
 }
 template Pointf3 BoundingBox3Base<Pointf3>::center() const;
 
-#ifdef SLIC3RXS
-REGISTER_CLASS(BoundingBox, "Geometry::BoundingBox");
-REGISTER_CLASS(BoundingBoxf, "Geometry::BoundingBoxf");
-REGISTER_CLASS(BoundingBoxf3, "Geometry::BoundingBoxf3");
-#endif
+template <class PointClass> bool
+BoundingBoxBase<PointClass>::contains(const PointClass &point) const
+{
+    return point.x >= this->min.x && point.x <= this->max.x
+        && point.y >= this->min.y && point.y <= this->max.y;
+}
+template bool BoundingBoxBase<Point>::contains(const Point &point) const;
+template bool BoundingBoxBase<Pointf>::contains(const Pointf &point) const;
 
 }

@@ -29,6 +29,7 @@ TriangleMesh::TriangleMesh(const TriangleMesh &other)
 {
     this->stl.heads = NULL;
     this->stl.tail  = NULL;
+    this->stl.error = other.stl.error;
     if (other.stl.facet_start != NULL) {
         this->stl.facet_start = (stl_facet*)calloc(other.stl.stats.number_of_facets, sizeof(stl_facet));
         std::copy(other.stl.facet_start, other.stl.facet_start + other.stl.stats.number_of_facets, this->stl.facet_start);
@@ -49,19 +50,15 @@ TriangleMesh::TriangleMesh(const TriangleMesh &other)
 
 TriangleMesh& TriangleMesh::operator= (TriangleMesh other)
 {
-    this->swap(other);
+    swap(*this, other);
     return *this;
 }
 
 void
-TriangleMesh::swap(TriangleMesh &other)
+TriangleMesh::swap(TriangleMesh &first, TriangleMesh &second)
 {
-    std::swap(this->stl,                 other.stl);
-    std::swap(this->repaired,            other.repaired);
-    std::swap(this->stl.facet_start,     other.stl.facet_start);
-    std::swap(this->stl.neighbors_start, other.stl.neighbors_start);
-    std::swap(this->stl.v_indices,       other.stl.v_indices);
-    std::swap(this->stl.v_shared,        other.stl.v_shared);
+    std::swap(first.repaired,            second.repaired);
+    std::swap(first.stl,                 second.stl);
 }
 
 TriangleMesh::~TriangleMesh() {
@@ -69,20 +66,20 @@ TriangleMesh::~TriangleMesh() {
 }
 
 void
-TriangleMesh::ReadSTLFile(char* input_file) {
-    stl_open(&stl, input_file);
+TriangleMesh::ReadSTLFile(const std::string &input_file) {
+    stl_open(&stl, input_file.c_str());
 }
 
 void
-TriangleMesh::write_ascii(char* output_file)
+TriangleMesh::write_ascii(const std::string &output_file)
 {
-    stl_write_ascii(&this->stl, output_file, "");
+    stl_write_ascii(&this->stl, output_file.c_str(), "");
 }
 
 void
-TriangleMesh::write_binary(char* output_file)
+TriangleMesh::write_binary(const std::string &output_file)
 {
-    stl_write_binary(&this->stl, output_file, "");
+    stl_write_binary(&this->stl, output_file.c_str(), "");
 }
 
 void
@@ -92,30 +89,7 @@ TriangleMesh::repair() {
     // admesh fails when repairing empty meshes
     if (this->stl.stats.number_of_facets == 0) return;
     
-    // checking exact
-    stl_check_facets_exact(&stl);
-    stl.stats.facets_w_1_bad_edge = (stl.stats.connected_facets_2_edge - stl.stats.connected_facets_3_edge);
-    stl.stats.facets_w_2_bad_edge = (stl.stats.connected_facets_1_edge - stl.stats.connected_facets_2_edge);
-    stl.stats.facets_w_3_bad_edge = (stl.stats.number_of_facets - stl.stats.connected_facets_1_edge);
-    
-    // checking nearby
-    int last_edges_fixed = 0;
-    float tolerance = stl.stats.shortest_edge;
-    float increment = stl.stats.bounding_diameter / 10000.0;
-    int iterations = 2;
-    if (stl.stats.connected_facets_3_edge < stl.stats.number_of_facets) {
-        for (int i = 0; i < iterations; i++) {
-            if (stl.stats.connected_facets_3_edge < stl.stats.number_of_facets) {
-                //printf("Checking nearby. Tolerance= %f Iteration=%d of %d...", tolerance, i + 1, iterations);
-                stl_check_facets_nearby(&stl, tolerance);
-                //printf("  Fixed %d edges.\n", stl.stats.edges_fixed - last_edges_fixed);
-                last_edges_fixed = stl.stats.edges_fixed;
-                tolerance += increment;
-            } else {
-                break;
-            }
-        }
-    }
+    this->check_topology();
     
     // remove_unconnected
     if (stl.stats.connected_facets_3_edge <  stl.stats.number_of_facets) {
@@ -125,6 +99,7 @@ TriangleMesh::repair() {
     // fill_holes
     if (stl.stats.connected_facets_3_edge < stl.stats.number_of_facets) {
         stl_fill_holes(&stl);
+        stl_clear_error(&stl);
     }
     
     // normal_directions
@@ -134,12 +109,54 @@ TriangleMesh::repair() {
     stl_fix_normal_values(&stl);
     
     // always calculate the volume and reverse all normals if volume is negative
-    stl_calculate_volume(&stl);
+    (void)this->volume();
     
     // neighbors
     stl_verify_neighbors(&stl);
     
     this->repaired = true;
+}
+
+float
+TriangleMesh::volume()
+{
+    if (this->stl.stats.volume == -1) stl_calculate_volume(&this->stl);
+    return this->stl.stats.volume;
+}
+
+void
+TriangleMesh::check_topology()
+{
+    // checking exact
+    stl_check_facets_exact(&stl);
+    stl.stats.facets_w_1_bad_edge = (stl.stats.connected_facets_2_edge - stl.stats.connected_facets_3_edge);
+    stl.stats.facets_w_2_bad_edge = (stl.stats.connected_facets_1_edge - stl.stats.connected_facets_2_edge);
+    stl.stats.facets_w_3_bad_edge = (stl.stats.number_of_facets - stl.stats.connected_facets_1_edge);
+    
+    // checking nearby
+    //int last_edges_fixed = 0;
+    float tolerance = stl.stats.shortest_edge;
+    float increment = stl.stats.bounding_diameter / 10000.0;
+    int iterations = 2;
+    if (stl.stats.connected_facets_3_edge < stl.stats.number_of_facets) {
+        for (int i = 0; i < iterations; i++) {
+            if (stl.stats.connected_facets_3_edge < stl.stats.number_of_facets) {
+                //printf("Checking nearby. Tolerance= %f Iteration=%d of %d...", tolerance, i + 1, iterations);
+                stl_check_facets_nearby(&stl, tolerance);
+                //printf("  Fixed %d edges.\n", stl.stats.edges_fixed - last_edges_fixed);
+                //last_edges_fixed = stl.stats.edges_fixed;
+                tolerance += increment;
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+bool
+TriangleMesh::is_manifold() const
+{
+    return this->stl.stats.connected_facets_3_edge == this->stl.stats.number_of_facets;
 }
 
 void
@@ -171,14 +188,15 @@ TriangleMesh::facets_count() const
 }
 
 void
-TriangleMesh::WriteOBJFile(char* output_file) {
+TriangleMesh::WriteOBJFile(const std::string &output_file) {
     stl_generate_shared_vertices(&stl);
-    stl_write_obj(&stl, output_file);
+    stl_write_obj(&stl, output_file.c_str());
 }
 
 void TriangleMesh::scale(float factor)
 {
     stl_scale(&(this->stl), factor);
+    stl_invalidate_shared_vertices(&this->stl);
 }
 
 void TriangleMesh::scale(const Pointf3 &versor)
@@ -188,41 +206,70 @@ void TriangleMesh::scale(const Pointf3 &versor)
     fversor[1] = versor.y;
     fversor[2] = versor.z;
     stl_scale_versor(&this->stl, fversor);
+    stl_invalidate_shared_vertices(&this->stl);
 }
 
 void TriangleMesh::translate(float x, float y, float z)
 {
     stl_translate_relative(&(this->stl), x, y, z);
+    stl_invalidate_shared_vertices(&this->stl);
+}
+
+void TriangleMesh::rotate(float angle, const Axis &axis)
+{
+    // admesh uses degrees
+    angle = Slic3r::Geometry::rad2deg(angle);
+    
+    if (axis == X) {
+        stl_rotate_x(&(this->stl), angle);
+    } else if (axis == Y) {
+        stl_rotate_y(&(this->stl), angle);
+    } else if (axis == Z) {
+        stl_rotate_z(&(this->stl), angle);
+    }
+    stl_invalidate_shared_vertices(&this->stl);
 }
 
 void TriangleMesh::rotate_x(float angle)
 {
-    stl_rotate_x(&(this->stl), angle);
+    this->rotate(angle, X);
 }
 
 void TriangleMesh::rotate_y(float angle)
 {
-    stl_rotate_y(&(this->stl), angle);
+    this->rotate(angle, Y);
 }
 
 void TriangleMesh::rotate_z(float angle)
 {
-    stl_rotate_z(&(this->stl), angle);
+    this->rotate(angle, Z);
 }
 
-void TriangleMesh::flip_x()
+void TriangleMesh::mirror(const Axis &axis)
 {
-    stl_mirror_yz(&this->stl);
+    if (axis == X) {
+        stl_mirror_yz(&this->stl);
+    } else if (axis == Y) {
+        stl_mirror_xz(&this->stl);
+    } else if (axis == Z) {
+        stl_mirror_xy(&this->stl);
+    }
+    stl_invalidate_shared_vertices(&this->stl);
 }
 
-void TriangleMesh::flip_y()
+void TriangleMesh::mirror_x()
 {
-    stl_mirror_xz(&this->stl);
+    this->mirror(X);
 }
 
-void TriangleMesh::flip_z()
+void TriangleMesh::mirror_y()
 {
-    stl_mirror_xy(&this->stl);
+    this->mirror(Y);
+}
+
+void TriangleMesh::mirror_z()
+{
+    this->mirror(Z);
 }
 
 void TriangleMesh::align_to_origin()
@@ -231,6 +278,16 @@ void TriangleMesh::align_to_origin()
         -(this->stl.stats.min.x),
         -(this->stl.stats.min.y),
         -(this->stl.stats.min.z)
+    );
+}
+
+void TriangleMesh::center_around_origin()
+{
+    this->align_to_origin();
+    this->translate(
+        -(this->stl.stats.size.x/2),
+        -(this->stl.stats.size.y/2),
+        -(this->stl.stats.size.z/2)
     );
 }
 
@@ -280,10 +337,11 @@ TriangleMesh::split() const
         mesh->stl.stats.type = inmemory;
         mesh->stl.stats.number_of_facets = facets.size();
         mesh->stl.stats.original_num_facets = mesh->stl.stats.number_of_facets;
+        stl_clear_error(&mesh->stl);
         stl_allocate(&mesh->stl);
         
         int first = 1;
-        for (std::deque<int>::const_iterator facet = facets.begin(); facet != facets.end(); facet++) {
+        for (std::deque<int>::const_iterator facet = facets.begin(); facet != facets.end(); ++facet) {
             mesh->stl.facet_start[facet - facets.begin()] = this->stl.facet_start[*facet];
             stl_facet_stats(&mesh->stl, this->stl.facet_start[*facet], first);
             first = 0;
@@ -307,17 +365,16 @@ TriangleMesh::merge(const TriangleMesh &mesh)
     stl_reallocate(&this->stl);
     
     // copy facets
-    for (int i = 0; i < mesh.stl.stats.number_of_facets; i++) {
-        this->stl.facet_start[number_of_facets + i] = mesh.stl.facet_start[i];
-    }
+    std::copy(mesh.stl.facet_start, mesh.stl.facet_start + mesh.stl.stats.number_of_facets, this->stl.facet_start + number_of_facets);
+    std::copy(mesh.stl.neighbors_start, mesh.stl.neighbors_start + mesh.stl.stats.number_of_facets, this->stl.neighbors_start + number_of_facets);
     
     // update size
     stl_get_size(&this->stl);
 }
 
 /* this will return scaled ExPolygons */
-void
-TriangleMesh::horizontal_projection(ExPolygons &retval) const
+ExPolygons
+TriangleMesh::horizontal_projection() const
 {
     Polygons pp;
     pp.reserve(this->stl.stats.number_of_facets);
@@ -333,12 +390,14 @@ TriangleMesh::horizontal_projection(ExPolygons &retval) const
     }
     
     // the offset factor was tuned using groovemount.stl
-    offset(pp, pp, 0.01 / SCALING_FACTOR);
-    union_(pp, retval, true);
+    offset(pp, &pp, 0.01 / SCALING_FACTOR);
+    ExPolygons retval;
+    union_(pp, &retval, true);
+    return retval;
 }
 
-void
-TriangleMesh::convex_hull(Polygon* hull)
+Polygon
+TriangleMesh::convex_hull()
 {
     this->require_shared_vertices();
     Points pp;
@@ -347,25 +406,19 @@ TriangleMesh::convex_hull(Polygon* hull)
         stl_vertex* v = &this->stl.v_shared[i];
         pp.push_back(Point(v->x / SCALING_FACTOR, v->y / SCALING_FACTOR));
     }
-    Slic3r::Geometry::convex_hull(pp, hull);
-}
-
-void
-TriangleMesh::bounding_box(BoundingBoxf3* bb) const
-{
-    bb->min.x = this->stl.stats.min.x;
-    bb->min.y = this->stl.stats.min.y;
-    bb->min.z = this->stl.stats.min.z;
-    bb->max.x = this->stl.stats.max.x;
-    bb->max.y = this->stl.stats.max.y;
-    bb->max.z = this->stl.stats.max.z;
+    return Slic3r::Geometry::convex_hull(pp);
 }
 
 BoundingBoxf3
 TriangleMesh::bounding_box() const
 {
     BoundingBoxf3 bb;
-    this->bounding_box(&bb);
+    bb.min.x = this->stl.stats.min.x;
+    bb.min.y = this->stl.stats.min.y;
+    bb.min.z = this->stl.stats.min.z;
+    bb.max.x = this->stl.stats.max.x;
+    bb.max.y = this->stl.stats.max.y;
+    bb.max.z = this->stl.stats.max.z;
     return bb;
 }
 
@@ -375,51 +428,6 @@ TriangleMesh::require_shared_vertices()
     if (!this->repaired) this->repair();
     if (this->stl.v_shared == NULL) stl_generate_shared_vertices(&(this->stl));
 }
-
-#ifdef SLIC3RXS
-
-REGISTER_CLASS(TriangleMesh, "TriangleMesh");
-
-SV*
-TriangleMesh::to_SV() {
-    SV* sv = newSV(0);
-    sv_setref_pv( sv, perl_class_name(this), (void*)this );
-    return sv;
-}
-
-void TriangleMesh::ReadFromPerl(SV* vertices, SV* facets)
-{
-    stl.stats.type = inmemory;
-    
-    // count facets and allocate memory
-    AV* facets_av = (AV*)SvRV(facets);
-    stl.stats.number_of_facets = av_len(facets_av)+1;
-    stl.stats.original_num_facets = stl.stats.number_of_facets;
-    stl_allocate(&stl);
-    
-    // read geometry
-    AV* vertices_av = (AV*)SvRV(vertices);
-    for (unsigned int i = 0; i < stl.stats.number_of_facets; i++) {
-        AV* facet_av = (AV*)SvRV(*av_fetch(facets_av, i, 0));
-        stl_facet facet;
-        facet.normal.x = 0;
-        facet.normal.y = 0;
-        facet.normal.z = 0;
-        for (unsigned int v = 0; v <= 2; v++) {
-            AV* vertex_av = (AV*)SvRV(*av_fetch(vertices_av, SvIV(*av_fetch(facet_av, v, 0)), 0));
-            facet.vertex[v].x = SvNV(*av_fetch(vertex_av, 0, 0));
-            facet.vertex[v].y = SvNV(*av_fetch(vertex_av, 1, 0));
-            facet.vertex[v].z = SvNV(*av_fetch(vertex_av, 2, 0));
-        }
-        facet.extra[0] = 0;
-        facet.extra[1] = 0;
-        
-        stl.facet_start[i] = facet;
-    }
-    
-    stl_get_size(&(this->stl));
-}
-#endif
 
 void
 TriangleMeshSlicer::slice(const std::vector<float> &z, std::vector<Polygons>* layers)
@@ -488,11 +496,10 @@ TriangleMeshSlicer::slice(const std::vector<float> &z, std::vector<Polygons>* la
     // build loops
     layers->resize(z.size());
     for (std::vector<IntersectionLines>::iterator it = lines.begin(); it != lines.end(); ++it) {
-        int layer_idx = it - lines.begin();
+        size_t layer_idx = it - lines.begin();
         #ifdef SLIC3R_DEBUG
-        printf("Layer %d:\n", layer_idx);
+        printf("Layer %zu:\n", layer_idx);
         #endif
-        
         this->make_loops(*it, &(*layers)[layer_idx]);
     }
 }
@@ -507,7 +514,7 @@ TriangleMeshSlicer::slice(const std::vector<float> &z, std::vector<ExPolygons>* 
     for (std::vector<Polygons>::const_iterator loops = layers_p.begin(); loops != layers_p.end(); ++loops) {
         #ifdef SLIC3R_DEBUG
         size_t layer_id = loops - layers_p.begin();
-        printf("Layer %zu (slice_z = %.2f): ", layer_id, z[layer_id]);
+        printf("Layer %zu (slice_z = %.2f):\n", layer_id, z[layer_id]);
         #endif
         
         this->make_expolygons(*loops, &(*layers)[ loops - layers_p.begin() ]);
@@ -542,15 +549,19 @@ TriangleMeshSlicer::slice_facet(float slice_z, const stl_facet &facet, const int
         if (a->z == b->z && a->z == slice_z) {
             // edge is horizontal and belongs to the current layer
             
-            /* We assume that this method is never being called for horizontal
-               facets, so no other edge is going to be on this layer. */
-            stl_vertex* v0 = &this->v_scaled_shared[ this->mesh->stl.v_indices[facet_idx].vertex[0] ];
-            stl_vertex* v1 = &this->v_scaled_shared[ this->mesh->stl.v_indices[facet_idx].vertex[1] ];
-            stl_vertex* v2 = &this->v_scaled_shared[ this->mesh->stl.v_indices[facet_idx].vertex[2] ];
+            stl_vertex &v0 = this->v_scaled_shared[ this->mesh->stl.v_indices[facet_idx].vertex[0] ];
+            stl_vertex &v1 = this->v_scaled_shared[ this->mesh->stl.v_indices[facet_idx].vertex[1] ];
+            stl_vertex &v2 = this->v_scaled_shared[ this->mesh->stl.v_indices[facet_idx].vertex[2] ];
             IntersectionLine line;
             if (min_z == max_z) {
                 line.edge_type = feHorizontal;
-            } else if (v0->z < slice_z || v1->z < slice_z || v2->z < slice_z) {
+                if (this->mesh->stl.facet_start[facet_idx].normal.z < 0) {
+                    /*  if normal points downwards this is a bottom horizontal facet so we reverse
+                        its point order */
+                    std::swap(a, b);
+                    std::swap(a_id, b_id);
+                }
+            } else if (v0.z < slice_z || v1.z < slice_z || v2.z < slice_z) {
                 line.edge_type = feTop;
                 std::swap(a, b);
                 std::swap(a_id, b_id);
@@ -610,10 +621,8 @@ TriangleMeshSlicer::slice_facet(float slice_z, const stl_facet &facet, const int
     if (!points.empty()) {
         assert(points.size() == 2); // facets must intersect each plane 0 or 2 times
         IntersectionLine line;
-        line.a.x        = points[1].x;
-        line.a.y        = points[1].y;
-        line.b.x        = points[0].x;
-        line.b.y        = points[0].y;
+        line.a          = (Point)points[1];
+        line.b          = (Point)points[0];
         line.a_id       = points[1].point_id;
         line.b_id       = points[0].point_id;
         line.edge_a_id  = points[1].edge_id;
@@ -626,12 +635,9 @@ TriangleMeshSlicer::slice_facet(float slice_z, const stl_facet &facet, const int
 void
 TriangleMeshSlicer::make_loops(std::vector<IntersectionLine> &lines, Polygons* loops)
 {
-        
     /*
     SVG svg("lines.svg");
-    for (IntersectionLines::iterator line = lines.begin(); line != lines.end(); ++line) {
-            svg.AddLine(*line);
-    }
+    svg.draw(lines);
     svg.Close();
     */
     
@@ -702,16 +708,16 @@ TriangleMeshSlicer::make_loops(std::vector<IntersectionLine> &lines, Polygons* l
             // find a line starting where last one finishes
             IntersectionLine* next_line = NULL;
             if (loop.back()->edge_b_id != -1) {
-                IntersectionLinePtrs* candidates = &(by_edge_a_id[loop.back()->edge_b_id]);
-                for (IntersectionLinePtrs::iterator lineptr = candidates->begin(); lineptr != candidates->end(); ++lineptr) {
+                IntersectionLinePtrs &candidates = by_edge_a_id[loop.back()->edge_b_id];
+                for (IntersectionLinePtrs::iterator lineptr = candidates.begin(); lineptr != candidates.end(); ++lineptr) {
                     if ((*lineptr)->skip) continue;
                     next_line = *lineptr;
                     break;
                 }
             }
             if (next_line == NULL && loop.back()->b_id != -1) {
-                IntersectionLinePtrs* candidates = &(by_a_id[loop.back()->b_id]);
-                for (IntersectionLinePtrs::iterator lineptr = candidates->begin(); lineptr != candidates->end(); ++lineptr) {
+                IntersectionLinePtrs &candidates = by_a_id[loop.back()->b_id];
+                for (IntersectionLinePtrs::iterator lineptr = candidates.begin(); lineptr != candidates.end(); ++lineptr) {
                     if ((*lineptr)->skip) continue;
                     next_line = *lineptr;
                     break;
@@ -725,7 +731,7 @@ TriangleMeshSlicer::make_loops(std::vector<IntersectionLine> &lines, Polygons* l
                     // loop is complete
                     Polygon p;
                     p.points.reserve(loop.size());
-                    for (IntersectionLinePtrs::iterator lineptr = loop.begin(); lineptr != loop.end(); ++lineptr) {
+                    for (IntersectionLinePtrs::const_iterator lineptr = loop.begin(); lineptr != loop.end(); ++lineptr) {
                         p.points.push_back((*lineptr)->a);
                     }
                     loops->push_back(p);
@@ -788,7 +794,7 @@ TriangleMeshSlicer::make_expolygons_simple(std::vector<IntersectionLine> &lines,
         int slice_idx = -1;
         double current_contour_area = -1;
         for (ExPolygons::iterator slice = slices->begin(); slice != slices->end(); ++slice) {
-            if (slice->contour.contains_point(loop->points.front())) {
+            if (slice->contour.contains(loop->points.front())) {
                 double area = slice->contour.area();
                 if (area < current_contour_area || current_contour_area == -1) {
                     slice_idx = slice - slices->begin();
@@ -813,10 +819,10 @@ TriangleMeshSlicer::make_expolygons(const Polygons &loops, ExPolygons* slices)
         TODO: find a faster algorithm for this, maybe with some sort of binary search.
         If we computed a "nesting tree" we could also just remove the consecutive loops
         having the same winding order, and remove the extra one(s) so that we could just
-        supply everything to offset_ex() instead of performing several union/diff calls.
+        supply everything to offset() instead of performing several union/diff calls.
     
         we sort by area assuming that the outermost loops have larger area;
-        the previous sorting method, based on $b->contains_point($a->[0]), failed to nest
+        the previous sorting method, based on $b->contains($a->[0]), failed to nest
         loops correctly in some edge cases when original model had overlapping facets
     */
 
@@ -839,17 +845,17 @@ TriangleMeshSlicer::make_expolygons(const Polygons &loops, ExPolygons* slices)
            of the loops, since the Orientation() function provided by Clipper
            would do the same, thus repeating the calculation */
         Polygons::const_iterator loop = loops.begin() + *loop_idx;
-        if (area[*loop_idx] >= 0) {
+        if (area[*loop_idx] > +EPSILON) {
             p_slices.push_back(*loop);
-        } else {
-            diff(p_slices, *loop, p_slices);
+        } else if (area[*loop_idx] < -EPSILON) {
+            diff(p_slices, *loop, &p_slices);
         }
     }
 
     // perform a safety offset to merge very close facets (TODO: find test case for this)
     double safety_offset = scale_(0.0499);
     ExPolygons ex_slices;
-    offset2_ex(p_slices, ex_slices, +safety_offset, -safety_offset);
+    offset2(p_slices, &ex_slices, +safety_offset, -safety_offset);
     
     #ifdef SLIC3R_DEBUG
     size_t holes_count = 0;
@@ -875,7 +881,7 @@ TriangleMeshSlicer::make_expolygons(std::vector<IntersectionLine> &lines, ExPoly
 void
 TriangleMeshSlicer::cut(float z, TriangleMesh* upper, TriangleMesh* lower)
 {
-    std::vector<IntersectionLine> upper_lines, lower_lines;
+    IntersectionLines upper_lines, lower_lines;
     
     float scaled_z = scale_(z);
     for (int facet_idx = 0; facet_idx < this->mesh->stl.stats.number_of_facets; facet_idx++) {
@@ -886,11 +892,11 @@ TriangleMeshSlicer::cut(float z, TriangleMesh* upper, TriangleMesh* lower)
         float max_z = fmaxf(facet->vertex[0].z, fmaxf(facet->vertex[1].z, facet->vertex[2].z));
         
         // intersect facet with cutting plane
-        std::vector<IntersectionLine> lines;
+        IntersectionLines lines;
         this->slice_facet(scaled_z, *facet, facet_idx, min_z, max_z, &lines);
         
         // save intersection lines for generating correct triangulations
-        for (std::vector<IntersectionLine>::iterator it = lines.begin(); it != lines.end(); ++it) {
+        for (IntersectionLines::const_iterator it = lines.begin(); it != lines.end(); ++it) {
             if (it->edge_type == feTop) {
                 lower_lines.push_back(*it);
             } else if (it->edge_type == feBottom) {
